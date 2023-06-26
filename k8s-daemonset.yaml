@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: go-objectgen
+spec:
+  template:
+    metadata:
+      labels:
+        name: objectgen
+    spec:
+      containers:
+      - name: objectgen
+        image: robschoene/go-objectgen:latest
+        env:
+          - name: BUCKET_NAME
+            value: "REPLACEME"
+          - name: DATA_VIP
+            value: "REPLACEME"
+          - name: NUMBER_OBJECTS
+            value: "REPLACEME"
+          - name: PREFIX_LENGTH
+            value: "REPLACEME"
+      restartPolicy: Always
+  selector:
+    matchLabels:
+      name: objectgen
