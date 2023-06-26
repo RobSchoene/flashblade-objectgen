@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"runtime"
 )
 
 func main() {
@@ -68,6 +69,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	//Get the number of cores for concurrency
+	coreCount := runtime.NumCPU()
+	if coreCount < 12 {
+		fmt.Printf("WARNING. Found %d cores, recommend at least 12 cores to prevent client bottlenecks.\n", coreCount)
+	}
+
 	var results []string
 
 	// ===== S3 Tests =====
@@ -76,7 +83,7 @@ func main() {
 
 	for _, dataVip := range dataVips {
 
-		s3, err := NewS3Tester(dataVip, accessKey, secretKey, bucketName, numObjects, prefixLength)
+		s3, err := NewS3Tester(dataVip, accessKey, secretKey, bucketName, coreCount, numObjects, prefixLength)
 		if err != nil {
 			fmt.Println(err)
 

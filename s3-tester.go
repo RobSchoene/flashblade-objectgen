@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 	"os"
-	"sync"
 	"sync/atomic"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -23,18 +22,18 @@ type S3Tester struct {
 	accessKey       string
 	secretKey       string
 	bucket          string
+	coreCount		int
 	numObjects		int
 	prefixLength	int
 
-	wg						sync.WaitGroup
 	atm_finished              int32
 	atm_counter_bytes_written uint64
-	objectsWritten 		      int
+	objectsWritten 		      int32
 }
 
-func NewS3Tester(endpoint string, accessKey string, secretKey string, bucketname string, numObjects int, prefixLength int) (*S3Tester, error) {
+func NewS3Tester(endpoint string, accessKey string, secretKey string, bucketname string, coreCount int, numObjects int, prefixLength int) (*S3Tester, error) {
 
-	s3Tester := &S3Tester{endpoint: endpoint, accessKey: accessKey, secretKey: secretKey, bucket: bucketname, numObjects: numObjects, prefixLength: prefixLength, objectsWritten: 0}
+	s3Tester := &S3Tester{endpoint: endpoint, accessKey: accessKey, secretKey: secretKey, bucket: bucketname, coreCount: coreCount, numObjects: numObjects, prefixLength: prefixLength, objectsWritten: 0}
 
 	sess := s3Tester.newSession()
 	svc := s3.New(sess)
@@ -68,33 +67,38 @@ func (s *S3Tester) newSession() *session.Session {
 	return session.Must(session.NewSession(s3Config))
 }
 
-func (s *S3Tester) writeOneObject(sname string) {
+func (s *S3Tester) writeOneObject(id int, jobs <-chan int, results chan<- int) {
+	for j := range jobs {
+		src := make([]byte, 8*1024)
+		rand.Read(src)
+		r := bytes.NewReader(src)
 
-	defer s.wg.Done()
-	src := make([]byte, 8*1024)
-	rand.Read(src)
-	r := bytes.NewReader(src)
+		prefix := generateTestObjectName(s.prefixLength, s.objectsWritten)
 
-	sess := s.newSession()
-	svc := s3manager.NewUploader(sess)
+		sess := s.newSession()
+		svc := s3manager.NewUploader(sess)
 
-	bytes_written := uint64(0)
+		bytes_written := uint64(0)
 
-	_, err := svc.Upload(&s3manager.UploadInput{
-		Bucket: &s.bucket,
-		Key:    &sname,
-		Body:   r,
-	})
-	if err != nil {
-		fmt.Println("error", err)
+		_, err := svc.Upload(&s3manager.UploadInput{
+			Bucket: &s.bucket,
+			Key:    &prefix,
+			Body:   r,
+		})
+		if err != nil {
+			fmt.Println("error", err)
+		}
+		bytes_written += uint64(len(src))
+		
+		atomic.AddInt32(&s.objectsWritten, 1)
+		atomic.AddUint64(&s.atm_counter_bytes_written, bytes_written)
+		
+		// sends the result to the results channel
+		results <- j * 2
 	}
-	bytes_written += uint64(len(src))
-
-	atomic.AddUint64(&s.atm_counter_bytes_written, bytes_written)
-
 }
 
-func generateTestObjectName(prefixlen int, i int) string {
+func generateTestObjectName(prefixlen int, i int32) string {
 
 	ret := make([]byte, prefixlen)
 	for j := 0; j < prefixlen; j++ {
@@ -106,24 +110,37 @@ func generateTestObjectName(prefixlen int, i int) string {
 		ret[j] = charset[num.Int64()]
 	}
 
-	return fmt.Sprintf("%s-%d", ret, i)
+	return fmt.Sprintf("StandardPrefix-%s-%d", ret, i)
 }
 
-func (s *S3Tester) WriteTest() int {
+func (s *S3Tester) WriteTest() int32 {
 	atomic.StoreInt32(&s.atm_finished, 0)
 	atomic.StoreUint64(&s.atm_counter_bytes_written, 0)
 
 	s.objectsWritten = 0
-	for i := 1; i <= s.numObjects; i+=1 {
-		prefix := generateTestObjectName(s.prefixLength, i)
-		s.wg.Add(1)
-		go s.writeOneObject(prefix)
-		s.objectsWritten++
-		s.wg.Wait()
+	jobs := make(chan int, s.numObjects)
+	results := make(chan int, s.numObjects)
+	
+	// create goroutines for the writer function
+	for w := 1; w <= s.coreCount; w++ {
+		go s.writeOneObject(w, jobs, results)
 	}
 
+	// send number of objects to the jobs channel
+	for j := 1; j <= s.numObjects; j++ {
+		jobs <- j
+	}
+	// close the jobs channel to signal that all jobs have been sent
+	close(jobs)
+
+	// receive number of objects from the results channel
+	for a := 1; a <= s.numObjects; a++ {
+		<-results
+	}
+	// close the results channel to signal that all results received
+	close(results)
+
 	atomic.StoreInt32(&s.atm_finished, 1)
-	s.wg.Wait()
 
 	return s.objectsWritten
 }
