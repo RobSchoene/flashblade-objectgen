@@ -35,19 +35,35 @@ func NewS3Tester(endpoint string, accessKey string, secretKey string, bucketname
 
 	s3Tester := &S3Tester{endpoint: endpoint, accessKey: accessKey, secretKey: secretKey, bucket: bucketname, coreCount: coreCount, numObjects: numObjects, prefixLength: prefixLength, objectsWritten: 0}
 
-	sess := s3Tester.newSession()
-	svc := s3.New(sess)
+	src := make([]byte, 8*1024)
+	rand.Read(src)
+	r := bytes.NewReader(src)
 
-	count := 0
-	err := svc.ListObjectsPages(&s3.ListObjectsInput{
+	testprefix := generateTestObjectName(32, s3Tester.objectsWritten)
+
+	sessA := s3Tester.newSession()
+	svcA := s3manager.NewUploader(sessA)
+
+	_, err := svcA.Upload(&s3manager.UploadInput{
 		Bucket: &bucketname,
-	}, func(p *s3.ListObjectsOutput, _ bool) (shouldContinue bool) {
-		count += len(p.Contents)
-		return true
+		Key:    &testprefix,
+		Body:   r,
 	})
 	if err != nil {
-		fmt.Println("failed to list objects", err)
-		return nil, err
+		fmt.Println("error", err)
+		os.Exit(1)
+	}
+
+	sessB := s3Tester.newSession()
+	svcB := s3.New(sessB)
+
+	_, err = svcB.DeleteObject(&s3.DeleteObjectInput{
+		Bucket: &bucketname,
+		Key:    &testprefix,
+	})
+	if err != nil {
+		fmt.Println("error", err)
+		os.Exit(1)
 	}
 
 	return s3Tester, err
@@ -72,7 +88,7 @@ func (s *S3Tester) writeOneObject(id int, jobs <-chan int, results chan<- int) {
 		src := make([]byte, 8*1024)
 		rand.Read(src)
 		r := bytes.NewReader(src)
-
+		atomic.AddInt32(&s.objectsWritten, 1)
 		prefix := generateTestObjectName(s.prefixLength, s.objectsWritten)
 
 		sess := s.newSession()
@@ -90,7 +106,7 @@ func (s *S3Tester) writeOneObject(id int, jobs <-chan int, results chan<- int) {
 		}
 		bytes_written += uint64(len(src))
 		
-		atomic.AddInt32(&s.objectsWritten, 1)
+		//atomic.AddInt32(&s.objectsWritten, 1)
 		atomic.AddUint64(&s.atm_counter_bytes_written, bytes_written)
 		
 		// sends the result to the results channel
